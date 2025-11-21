@@ -60,6 +60,8 @@ try:
     print("numba.cuda imported")
 except Exception:
     _HAVE_CUDA = False
+    
+from numba_progress import ProgressBar
 
 
 # ======================================================================
@@ -393,7 +395,7 @@ def calc_mode_field_quadrature(r0_nm, l, m, n,
 # ======================================================================
 
 @njit(parallel=True)
-def _convolve_kernel_collocated_cpu(P, Vsrc, weights, eps_len):
+def _convolve_kernel_collocated_cpu(P, Vsrc, weights, eps_len, progress):
     """
     CPU-parallel core convolution (Numba, parallel over p):
 
@@ -418,11 +420,16 @@ def _convolve_kernel_collocated_cpu(P, Vsrc, weights, eps_len):
         wx = 0.0 + 0.0j
         wy = 0.0 + 0.0j
         wz = 0.0 + 0.0j
-
+        
         for q in range(N):
             dx = px - P[q, 0]
             dy = py - P[q, 1]
             dz = pz - P[q, 2]
+            
+            vqx = Vsrc[q, 0]
+            vqy = Vsrc[q, 1]
+            vqz = Vsrc[q, 2]
+
             r2 = dx*dx + dy*dy + dz*dz
 
             # Principal value: skip contributions for |d| < eps_len
@@ -441,10 +448,6 @@ def _convolve_kernel_collocated_cpu(P, Vsrc, weights, eps_len):
                 inv_r3 = 1.0 / (r2 * r)
                 inv_r5 = 1.0 / (r2 * r2 * r)
 
-                vqx = Vsrc[q, 0]
-                vqy = Vsrc[q, 1]
-                vqz = Vsrc[q, 2]
-
                 dv = dx * vqx + dy * vqy + dz * vqz  # complex
                 factor = 3.0 * inv_r5 * dv
 
@@ -456,11 +459,11 @@ def _convolve_kernel_collocated_cpu(P, Vsrc, weights, eps_len):
                 wx += wq * kx
                 wy += wq * ky
                 wz += wq * kz
-
+        
         W[p, 0] = wx
         W[p, 1] = wy
         W[p, 2] = wz
-
+        progress.update(1)
     return W
 
 
@@ -485,6 +488,7 @@ if _HAVE_CUDA:
         py = P[p, 1]
         pz = P[p, 2]
         eps2 = eps_len * eps_len
+        
 
         wx = 0.0 + 0.0j
         wy = 0.0 + 0.0j
@@ -494,6 +498,11 @@ if _HAVE_CUDA:
             dx = px - P[q, 0]
             dy = py - P[q, 1]
             dz = pz - P[q, 2]
+            
+            vqx = Vsrc[q, 0]
+            vqy = Vsrc[q, 1]
+            vqz = Vsrc[q, 2]
+        
             r2 = dx*dx + dy*dy + dz*dz
 
             # Principal value: skip contributions for |d| < eps_len
@@ -511,10 +520,6 @@ if _HAVE_CUDA:
                 r = math.sqrt(r2)
                 inv_r3 = 1.0 / (r2 * r)
                 inv_r5 = 1.0 / (r2 * r2 * r)
-
-                vqx = Vsrc[q, 0]
-                vqy = Vsrc[q, 1]
-                vqz = Vsrc[q, 2]
 
                 dv = dx * vqx + dy * vqy + dz * vqz  # complex
                 factor = 3.0 * inv_r5 * dv
@@ -562,20 +567,11 @@ def convolve_kernel_collocated(points_nm, V, weights,
 
     if use_gpu and _HAVE_CUDA:
         # GPU path
-        dP = cuda.to_device(P)
-        dV = cuda.to_device(Vsrc)
-        dW = cuda.device_array((N, 3), dtype=np.complex128)
-        dw = cuda.to_device(wts)
-
-        blocks_per_grid = (N + threads_per_block - 1) // threads_per_block
-        _convolve_kernel_collocated_cuda[blocks_per_grid, threads_per_block](
-            dP, dV, dw, float(eps_len), dW
-        )
-        W = dW.copy_to_host()
-        return W
+        ...
     else:
         # CPU parallel path
-        return _convolve_kernel_collocated_cpu(P, Vsrc, wts, float(eps_len))
+        progress = ProgressBar(total=points_nm.shape[0])
+        return _convolve_kernel_collocated_cpu(P, Vsrc, wts, float(eps_len), progress)
 
 
 # ======================================================================
